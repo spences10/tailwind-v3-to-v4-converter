@@ -1,4 +1,4 @@
-import { css_patterns, plugin_patterns } from './reference';
+import { convert } from './simple';
 import type {
 	CSSData,
 	ConversionResult,
@@ -60,60 +60,60 @@ const extract_object_from_config = (
 			);
 			if (typography_match) {
 				try {
-					// Extract the typography config manually
 					const typography_str = typography_match[1];
-
-					// Create a structured object for typography config
 					const typography_config = {
 						DEFAULT: {
 							css: {},
 						},
 					};
 
-					// Helper function to parse nested objects
-					const parse_nested_object = (
-						str: string,
-					): Record<string, any> => {
-						const result: Record<string, any> = {};
+					// Extract the DEFAULT.css object
+					const default_css_match = typography_str.match(
+						/DEFAULT\s*:\s*{\s*css\s*:\s*({[\s\S]*?})\s*}/,
+					);
+					if (default_css_match) {
+						const css_str = default_css_match[1];
 
-						// Match all property definitions
+						// Parse the CSS object
+						const css_config: Record<string, any> = {};
+
+						// Match properties and their values
 						const property_regex =
-							/(\w+)\s*:\s*(null|['"]([^'"]*)['"]\s*|{[\s\S]*?}(?=\s*,|\s*})|[^,}]*)/g;
+							/(\w+)\s*:\s*(null|['"]([^'"]*)['"]\s*|{[\s\S]*?}(?=\s*[,}])|[^,}]*)/g;
 						let match;
 
-						while ((match = property_regex.exec(str)) !== null) {
+						while ((match = property_regex.exec(css_str)) !== null) {
 							const [_, key, value_str] = match;
 
-							// Handle different value types
 							if (value_str.trim() === 'null') {
-								result[key] = null;
+								css_config[key] = null;
 							} else if (value_str.trim().startsWith('{')) {
-								// Recursively parse nested objects
-								result[key] = parse_nested_object(value_str);
+								// Handle nested objects (like img)
+								const nested_obj: Record<string, any> = {};
+								const nested_props = value_str.match(
+									/(\w+)\s*:\s*(['"]([^'"]*)['"]\s*|[^,}]*)/g,
+								);
+
+								if (nested_props) {
+									nested_props.forEach((prop) => {
+										const [nested_key, nested_value] = prop
+											.split(':')
+											.map((s) => s.trim().replace(/['"]/g, ''));
+										nested_obj[nested_key] = nested_value;
+									});
+								}
+								css_config[key] = nested_obj;
 							} else {
-								// Clean up string values
-								result[key] = value_str.trim().replace(/['"]/g, '');
+								css_config[key] = value_str
+									.trim()
+									.replace(/['"]/g, '');
 							}
 						}
 
-						return result;
-					};
-
-					// Parse the entire typography object
-					const parsed_typography =
-						parse_nested_object(typography_str);
-					if (parsed_typography.DEFAULT?.css) {
-						(typography_config.DEFAULT.css as any) =
-							parsed_typography.DEFAULT.css;
+						typography_config.DEFAULT.css = css_config;
 					}
 
 					parsed.theme.extend.typography = typography_config;
-
-					// Log for debugging
-					console.log(
-						'Parsed typography config:',
-						JSON.stringify(typography_config, null, 2),
-					);
 				} catch (error) {
 					console.warn('Failed to parse typography config:', error);
 					parsed.theme.extend.typography = { DEFAULT: { css: {} } };
@@ -128,12 +128,45 @@ const extract_object_from_config = (
 	);
 	if (daisyui_match) {
 		try {
-			// Clean up the daisyui object string and parse it
-			const daisyui_str = daisyui_match[1]
-				.replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2":')
-				.replace(/'/g, '"')
-				.replace(/,(\s*[}\]])/g, '$1');
-			parsed.daisyui = JSON.parse(daisyui_str);
+			const daisyui_str = daisyui_match[1];
+			const daisyui_config: Record<string, any> = {};
+
+			// Extract darkTheme
+			const dark_theme_match = daisyui_str.match(
+				/darkTheme\s*:\s*['"]([^'"]+)['"]/,
+			);
+			if (dark_theme_match) {
+				daisyui_config.darkTheme = dark_theme_match[1];
+			}
+
+			// Extract themes
+			const themes_match = daisyui_str.match(/themes\s*:\s*([^,}]+)/);
+			if (themes_match) {
+				const themes_value = themes_match[1].trim();
+				// Check if it's a function call
+				if (themes_value.endsWith('()')) {
+					daisyui_config.themes = true; // Default to all themes if it's a function call
+				} else if (
+					themes_value === 'true' ||
+					themes_value === 'false'
+				) {
+					daisyui_config.themes = themes_value === 'true';
+				} else {
+					try {
+						daisyui_config.themes = JSON.parse(themes_value);
+					} catch {
+						daisyui_config.themes = true; // Fallback to all themes
+					}
+				}
+			}
+
+			// Extract other boolean flags
+			const logs_match = daisyui_str.match(/logs\s*:\s*(true|false)/);
+			if (logs_match) {
+				daisyui_config.logs = logs_match[1] === 'true';
+			}
+
+			parsed.daisyui = daisyui_config;
 		} catch (error) {
 			console.warn('Failed to parse daisyui config:', error);
 			parsed.daisyui = { themes: true };
@@ -227,86 +260,18 @@ const convert_theme = (theme: TailwindConfig['theme']): string[] => {
 	return css_vars;
 };
 
-const merge_and_convert = (
-	config: TailwindConfig,
-	css: CSSData,
+export const merge_and_convert = (
+	config: any,
+	css: any,
 ): ConversionResult => {
-	const result: ConversionResult = {
-		css: '',
-		warnings: [],
-		errors: [],
-	};
+	// Convert config to string if it's an object
+	const config_str =
+		typeof config === 'string'
+			? config
+			: JSON.stringify(config, null, 2);
+	const css_str = typeof css === 'string' ? css : '';
 
-	try {
-		const parts: string[] = [
-			// Imports
-			...css.imports.filter((line) => !line.includes('tailwindcss/')),
-			'',
-			'/* Import Tailwind */',
-			'@import "tailwindcss";',
-			'',
-		];
-
-		// Process base layer
-		const base_parts = [
-			css_patterns.base.html(css.base.join('\n')),
-			css_patterns.base.selection(css.base.join('\n')),
-			css_patterns.base.scrollbar(css.base.join('\n')),
-		].filter(Boolean);
-
-		if (base_parts.length > 0) {
-			parts.push('/* Base layer */');
-			parts.push(...base_parts);
-			parts.push('');
-		}
-
-		// Theme conversions
-		const theme_parts = convert_theme(config.theme);
-		if (theme_parts.length > 0) {
-			parts.push('/* Custom media queries */');
-			parts.push(...theme_parts);
-			parts.push('');
-		}
-
-		// Components layer
-		const components = css_patterns.components.extract(
-			css.components.join('\n'),
-		);
-		if (Object.keys(components).length > 0) {
-			parts.push('/* Components */');
-			parts.push('@layer components {');
-			Object.entries(components).forEach(([class_name, rules]) => {
-				parts.push(`  .${class_name} {`);
-				parts.push(`    ${rules}`);
-				parts.push('  }');
-			});
-			parts.push('}');
-			parts.push('');
-		}
-
-		// Plugin configurations
-		parts.push('/* Plugin configurations */');
-
-		// Typography plugin
-		if (config.plugins?.some((p) => p.name?.includes('typography'))) {
-			parts.push(...plugin_patterns.typography.config_to_css(config));
-			parts.push('');
-		}
-
-		// DaisyUI plugin
-		if (config.daisyui) {
-			parts.push(...plugin_patterns.daisyui.config_to_css(config));
-			parts.push('');
-		}
-
-		result.css = parts.join('\n');
-	} catch (error: unknown) {
-		result.errors.push(
-			`Conversion error: ${error instanceof Error ? error.message : String(error)}`,
-		);
-	}
-
-	return result;
+	return convert(config_str, css_str);
 };
 
-export { merge_and_convert, parse_css_file, parse_tailwind_config };
+export { convert };

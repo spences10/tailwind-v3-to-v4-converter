@@ -1,9 +1,5 @@
 <script lang="ts">
-	import {
-		merge_and_convert,
-		parse_css_file,
-		parse_tailwind_config,
-	} from '$lib/converter';
+	import { merge_and_convert } from '$lib/converter';
 	import { theme } from '$lib/stores/theme';
 
 	let config_input = $state('');
@@ -16,9 +12,7 @@
 
 	const handle_convert = () => {
 		try {
-			const config = parse_tailwind_config(config_input);
-			const css_data = parse_css_file(css_input);
-			result = merge_and_convert(config, css_data);
+			result = merge_and_convert(config_input, css_input);
 		} catch (error: unknown) {
 			result = {
 				css: '',
