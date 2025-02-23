@@ -70,42 +70,41 @@ const extract_object_from_config = (
 						},
 					};
 
-					// Extract maxWidth
-					const max_width_match = typography_str.match(
-						/maxWidth\s*:\s*(null|['"][^'"]*['"])/,
-					);
-					if (max_width_match) {
-						(typography_config.DEFAULT.css as any).maxWidth =
-							max_width_match[1] === 'null'
-								? null
-								: max_width_match[1];
-					}
+					// Helper function to parse nested objects
+					const parse_nested_object = (
+						str: string,
+					): Record<string, any> => {
+						const result: Record<string, any> = {};
 
-					// Extract img config
-					const img_match = typography_str.match(
-						/img\s*:\s*({[\s\S]*?}),?\s*(?:}|$)/,
-					);
-					if (img_match) {
-						const img_str = img_match[1];
-						(typography_config.DEFAULT.css as any).img = {};
+						// Match all property definitions
+						const property_regex =
+							/(\w+)\s*:\s*(null|['"]([^'"]*)['"]\s*|{[\s\S]*?}(?=\s*,|\s*})|[^,}]*)/g;
+						let match;
 
-						// Extract filter
-						const filter_match = img_str.match(
-							/filter\s*:\s*(['"]([^'"]*)['"]),?/,
-						);
-						if (filter_match) {
-							(typography_config.DEFAULT.css as any).img.filter =
-								filter_match[2];
+						while ((match = property_regex.exec(str)) !== null) {
+							const [_, key, value_str] = match;
+
+							// Handle different value types
+							if (value_str.trim() === 'null') {
+								result[key] = null;
+							} else if (value_str.trim().startsWith('{')) {
+								// Recursively parse nested objects
+								result[key] = parse_nested_object(value_str);
+							} else {
+								// Clean up string values
+								result[key] = value_str.trim().replace(/['"]/g, '');
+							}
 						}
 
-						// Extract margin
-						const margin_match = img_str.match(
-							/margin\s*:\s*(['"]([^'"]*)['"]),?/,
-						);
-						if (margin_match) {
-							(typography_config.DEFAULT.css as any).img.margin =
-								margin_match[2];
-						}
+						return result;
+					};
+
+					// Parse the entire typography object
+					const parsed_typography =
+						parse_nested_object(typography_str);
+					if (parsed_typography.DEFAULT?.css) {
+						(typography_config.DEFAULT.css as any) =
+							parsed_typography.DEFAULT.css;
 					}
 
 					parsed.theme.extend.typography = typography_config;
