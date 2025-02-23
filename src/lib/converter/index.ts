@@ -1,3 +1,4 @@
+import { css_patterns, plugin_patterns } from './reference';
 import type {
 	CSSData,
 	ConversionResult,
@@ -27,7 +28,7 @@ const extract_object_from_config = (
 	);
 	if (theme_match) {
 		const theme_str = theme_match[1];
-		parsed.theme = {};
+		parsed.theme = { extend: {} };
 
 		// Extract screens
 		const screens_match = theme_str.match(
@@ -49,12 +50,76 @@ const extract_object_from_config = (
 			parsed.theme.screens = screens;
 		}
 
-		// Extract typography settings
-		const typography_match = theme_str.match(
-			/typography\s*:\s*({[\s\S]*?}),/,
+		// Extract typography settings from extend
+		const extend_match = theme_str.match(
+			/extend\s*:\s*({[\s\S]*?}),?\s*(?:}|$)/,
 		);
-		if (typography_match) {
-			parsed.theme.typography = { DEFAULT: { css: {} } };
+		if (extend_match) {
+			const typography_match = extend_match[1].match(
+				/typography\s*:\s*({[\s\S]*?}),?\s*(?:}|$)/,
+			);
+			if (typography_match) {
+				try {
+					// Extract the typography config manually
+					const typography_str = typography_match[1];
+
+					// Create a structured object for typography config
+					const typography_config = {
+						DEFAULT: {
+							css: {},
+						},
+					};
+
+					// Extract maxWidth
+					const max_width_match = typography_str.match(
+						/maxWidth\s*:\s*(null|['"][^'"]*['"])/,
+					);
+					if (max_width_match) {
+						(typography_config.DEFAULT.css as any).maxWidth =
+							max_width_match[1] === 'null'
+								? null
+								: max_width_match[1];
+					}
+
+					// Extract img config
+					const img_match = typography_str.match(
+						/img\s*:\s*({[\s\S]*?}),?\s*(?:}|$)/,
+					);
+					if (img_match) {
+						const img_str = img_match[1];
+						(typography_config.DEFAULT.css as any).img = {};
+
+						// Extract filter
+						const filter_match = img_str.match(
+							/filter\s*:\s*(['"]([^'"]*)['"]),?/,
+						);
+						if (filter_match) {
+							(typography_config.DEFAULT.css as any).img.filter =
+								filter_match[2];
+						}
+
+						// Extract margin
+						const margin_match = img_str.match(
+							/margin\s*:\s*(['"]([^'"]*)['"]),?/,
+						);
+						if (margin_match) {
+							(typography_config.DEFAULT.css as any).img.margin =
+								margin_match[2];
+						}
+					}
+
+					parsed.theme.extend.typography = typography_config;
+
+					// Log for debugging
+					console.log(
+						'Parsed typography config:',
+						JSON.stringify(typography_config, null, 2),
+					);
+				} catch (error) {
+					console.warn('Failed to parse typography config:', error);
+					parsed.theme.extend.typography = { DEFAULT: { css: {} } };
+				}
+			}
 		}
 	}
 
@@ -63,17 +128,16 @@ const extract_object_from_config = (
 		/daisyui\s*:\s*({[\s\S]*?}),/,
 	);
 	if (daisyui_match) {
-		parsed.daisyui = {
-			darkTheme: 'dark',
-			themes: true,
-		};
-
-		// Extract specific DaisyUI settings if needed
-		const dark_theme_match = daisyui_match[1].match(
-			/darkTheme\s*:\s*['"]([^'"]+)['"]/,
-		);
-		if (dark_theme_match) {
-			parsed.daisyui.darkTheme = dark_theme_match[1];
+		try {
+			// Clean up the daisyui object string and parse it
+			const daisyui_str = daisyui_match[1]
+				.replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2":')
+				.replace(/'/g, '"')
+				.replace(/,(\s*[}\]])/g, '$1');
+			parsed.daisyui = JSON.parse(daisyui_str);
+		} catch (error) {
+			console.warn('Failed to parse daisyui config:', error);
+			parsed.daisyui = { themes: true };
 		}
 	}
 
@@ -182,35 +246,57 @@ const merge_and_convert = (
 			'/* Import Tailwind */',
 			'@import "tailwindcss";',
 			'',
-			// Theme conversions
-			'/* Custom media queries */',
-			...convert_theme(config.theme),
-			'',
-			// Base layer
-			'@layer base {',
-			...css.base,
-			'}',
-			'',
-			// Components layer
-			'@layer components {',
-			...css.components,
-			'}',
-			'',
-			// Plugin configurations
-			'/* Plugin configurations */',
 		];
 
-		// Add plugin configurations
-		if (config.plugins?.some((p) => p.name?.includes('typography'))) {
-			parts.push('@plugin "@tailwindcss/typography";');
+		// Process base layer
+		const base_parts = [
+			css_patterns.base.html(css.base.join('\n')),
+			css_patterns.base.selection(css.base.join('\n')),
+			css_patterns.base.scrollbar(css.base.join('\n')),
+		].filter(Boolean);
+
+		if (base_parts.length > 0) {
+			parts.push('/* Base layer */');
+			parts.push(...base_parts);
 			parts.push('');
 		}
 
-		// Handle DaisyUI configuration if present
-		if (config.daisyui) {
-			parts.push('@plugin "daisyui" {');
-			parts.push('  themes: all;');
+		// Theme conversions
+		const theme_parts = convert_theme(config.theme);
+		if (theme_parts.length > 0) {
+			parts.push('/* Custom media queries */');
+			parts.push(...theme_parts);
+			parts.push('');
+		}
+
+		// Components layer
+		const components = css_patterns.components.extract(
+			css.components.join('\n'),
+		);
+		if (Object.keys(components).length > 0) {
+			parts.push('/* Components */');
+			parts.push('@layer components {');
+			Object.entries(components).forEach(([class_name, rules]) => {
+				parts.push(`  .${class_name} {`);
+				parts.push(`    ${rules}`);
+				parts.push('  }');
+			});
 			parts.push('}');
+			parts.push('');
+		}
+
+		// Plugin configurations
+		parts.push('/* Plugin configurations */');
+
+		// Typography plugin
+		if (config.plugins?.some((p) => p.name?.includes('typography'))) {
+			parts.push(...plugin_patterns.typography.config_to_css(config));
+			parts.push('');
+		}
+
+		// DaisyUI plugin
+		if (config.daisyui) {
+			parts.push(...plugin_patterns.daisyui.config_to_css(config));
 			parts.push('');
 		}
 

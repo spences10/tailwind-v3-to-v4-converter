@@ -1,7 +1,21 @@
 export type TailwindConfig = {
 	theme?: {
 		screens?: Record<string, string>;
-		extend?: Record<string, any>;
+		extend?: {
+			typography?: {
+				DEFAULT: {
+					css: {
+						maxWidth?: string | null;
+						img?: {
+							filter?: string;
+							margin?: string;
+						};
+						[key: string]: any;
+					};
+				};
+			};
+			[key: string]: any;
+		};
 		[key: string]: any;
 	};
 	plugins?: any[];
